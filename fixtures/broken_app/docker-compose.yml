@@ -1,0 +1,22 @@
+services:
+  backend:
+    build: .
+    container_name: broken-backend
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PASSWORD: supersecret-pg-pass
+    depends_on:
+      - db
+      - cache
+    restart: on-failure
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: supersecret-pg-pass
+      POSTGRES_DB: app
+  cache:
+    image: redis:7
