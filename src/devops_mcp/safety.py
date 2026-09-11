@@ -93,7 +93,7 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
         re.compile(
             rf"""(?ix)
             (?P<prefix>
-                (?:^|(?<=[\s,{{]))
+                (?:^[+\-\ ]?|(?<=[\s,{{]))      # ^[+- ] covers unified-diff line markers
                 (?:export\s+)?
                 (?P<q1>["']?)
                 [A-Za-z0-9_.\-]*(?:{_SECRET_KEY_WORDS})[A-Za-z0-9_.\-]*

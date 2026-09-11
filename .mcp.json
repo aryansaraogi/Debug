@@ -3,6 +3,10 @@
     "devops-filesystem": {
       "command": "python",
       "args": ["-m", "devops_mcp.servers.filesystem"]
+    },
+    "devops-git": {
+      "command": "python",
+      "args": ["-m", "devops_mcp.servers.git"]
     }
   }
 }

@@ -7,3 +7,4 @@ venv/
 dist/
 build/
 .claude/settings.local.json
+demo/

@@ -91,6 +91,9 @@ def test_display_path_relative_to_root(roots):
         ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", "eyJhbGci"),
         ("token = ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "ABCDEFGHIJKLMNOP"),
         ("aws_access_key_id = AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"),
+        ("+DB_PASSWORD=newsecret", "newsecret"),  # unified diff added line
+        ("-DB_PASSWORD=oldsecret", "oldsecret"),  # unified diff removed line
+        ("12 | SECRET_KEY=abcdef123456", "abcdef123456"),  # read_file numbered line
     ],
 )
 def test_redact_hides_secret_values(line, must_hide):

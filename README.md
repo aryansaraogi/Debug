@@ -12,7 +12,7 @@ The agent doesn't get a dump of your system. It gets tools, and decides which on
 | Server | Tools | State |
 |---|---|---|
 | `devops-filesystem` | `list_files`, `read_file`, `search_files` | **done** |
-| `devops-git` | `git_status`, `git_diff`, `git_log`, `git_show` | planned |
+| `devops-git` | `git_status`, `git_diff`, `git_log`, `git_show` | **done** |
 | `devops-docker` | `list_containers`, `inspect_container`, `get_container_logs` | planned |
 | `devops-logs` | `read_log`, `search_logs`, `summarize_errors` | planned |
 
@@ -27,9 +27,18 @@ mcp dev src/devops_mcp/servers/filesystem.py   # opens the MCP Inspector
 The servers are registered for Claude Code in [`.mcp.json`](.mcp.json) (project scope).
 Open this folder in Claude Code, approve the project server when prompted, then check `/mcp`.
 
-Try it on the bundled broken app:
+Build the demo target, a git repo whose history contains the bug-introducing commit:
 
-> The app in `fixtures/broken_app` is returning 500s. Find out why.
+```bash
+python scripts/make_demo.py      # creates demo/broken_app (gitignored)
+```
+
+Then ask:
+
+> The app in `demo/broken_app` started returning 500s after recent changes. What broke?
+
+The agent should chain `search_files` → `git_log` → `git_show` and land on the
+"Rename users.email column to mail" commit.
 
 ## Configuration
 
@@ -54,6 +63,8 @@ Everything lives in [`src/devops_mcp/safety.py`](src/devops_mcp/safety.py):
   model how to narrow the query (line ranges, globs, `max_results`).
 - **Read-only.** Every tool is annotated `readOnlyHint`. Mutating actions (restart container, apply
   patch) are a later phase and will require explicit human approval per call.
+- **No option injection.** Model-supplied refs and paths handed to `git` are validated (no leading
+  `-`, ref-shaped characters only) and paths always follow `--`.
 
 ## Layout
 
@@ -63,8 +74,10 @@ src/devops_mcp/
   safety.py        path sandbox, redaction, truncation
   shell.py         subprocess wrapper (git / docker servers)
   servers/
-    filesystem.py  MCP server entry point
+    filesystem.py  list_files / read_file / search_files
+    git.py         git_status / git_diff / git_log / git_show
 fixtures/broken_app/   deliberately broken Flask app used by tests and demos
+scripts/make_demo.py   builds demo/broken_app with a telling git history
 tests/
 ```
 
