@@ -50,7 +50,7 @@ def _load_gitignore(root: Path) -> pathspec.PathSpec | None:
         lines = gi.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return None
-    return pathspec.PathSpec.from_lines("gitwildmatch", lines)
+    return pathspec.PathSpec.from_lines("gitignore", lines)
 
 
 def _ignored(spec: pathspec.PathSpec | None, rel_posix: str, is_dir: bool) -> bool:

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "devops-filesystem": {
+      "command": "python",
+      "args": ["-m", "devops_mcp.servers.filesystem"]
+    }
+  }
+}
