@@ -215,7 +215,8 @@ def rebuild_service(compose_dir: str, service: str | None = None, no_cache: bool
 
     ps = dc.run_docker("compose", "ps", "--format", "{{.Name}} {{.State}}", timeout=60.0, cwd=directory)
     containers = [ln.strip() for ln in ps.stdout.splitlines() if ln.strip()] if ps.ok else []
-    unhealthy = [c for c in containers if not c.endswith(("running", "healthy"))]
+    # compose reports state as "running"/"Running" depending on version, so compare case-insensitively.
+    unhealthy = [c for c in containers if not c.lower().endswith(("running", "healthy"))]
     return RebuildResult(
         action="rebuild",
         compose_dir=display_path(directory),

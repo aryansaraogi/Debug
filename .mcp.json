@@ -27,6 +27,13 @@
         "-m",
         "devops_mcp.servers.logs"
       ]
+    },
+    "devops-actions": {
+      "command": "python",
+      "args": [
+        "-m",
+        "devops_mcp.servers.actions"
+      ]
     }
   }
 }

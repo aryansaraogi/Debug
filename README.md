@@ -1,7 +1,7 @@
 # AI DevOps Assistant (MCP)
 
-MCP servers that give an AI agent **controlled, read-only** access to a local development
-environment, so it can investigate questions like *"why is my backend container crashing?"*
+MCP servers that give an AI agent **controlled** access to a local development
+environment (read-only by default, writes gated behind human approval), so it can investigate questions like *"why is my backend container crashing?"*
 by itself: listing files, reading config, grepping for the error string, checking git history
 and container logs, then explaining the cause.
 
@@ -15,6 +15,7 @@ The agent doesn't get a dump of your system. It gets tools, and decides which on
 | `devops-git` | `git_status`, `git_diff`, `git_log`, `git_show` | **done** |
 | `devops-docker` | `list_containers`, `inspect_container`, `get_container_logs` | **done** |
 | `devops-logs` | `read_log`, `search_logs`, `summarize_errors` | **done** |
+| `devops-actions` | `restart_container`, `stop_container`, `start_container`, `rebuild_service` | **done** (write, approval-gated) |
 
 ## Quick start
 
@@ -62,6 +63,8 @@ Tear down with `docker compose down`.
 | `DEVOPS_MCP_ROOTS` | `CLAUDE_PROJECT_DIR`, else cwd | `;`-separated (`:` on Unix) directories the tools may touch. Relative paths resolve against the first one. |
 | `DEVOPS_MCP_MAX_LINES` | `400` | Max lines in any tool result. |
 | `DEVOPS_MCP_MAX_BYTES` | `65536` | Max bytes in any tool result. |
+| `DEVOPS_MCP_ALLOW_ACTIONS` | `1` | Set to `0` to disable every write tool in `devops-actions`. |
+| `DEVOPS_MCP_ACTION_CONTAINERS` | *(all)* | Comma-separated glob allowlist scoping which containers write tools may touch, e.g. `broken_app-*,broken-backend`. |
 
 Point `DEVOPS_MCP_ROOTS` at a real project to investigate it.
 
@@ -76,10 +79,24 @@ Everything lives in [`src/devops_mcp/safety.py`](src/devops_mcp/safety.py):
   every file, search and log result. Config files stay readable, which is usually where the bug is.
 - **Output budget.** No result exceeds the configured size. Truncated results say so and tell the
   model how to narrow the query (line ranges, globs, `max_results`).
-- **Read-only.** Every tool is annotated `readOnlyHint`. Mutating actions (restart container, apply
-  patch) are a later phase and will require explicit human approval per call.
-- **No option injection.** Model-supplied refs and paths handed to `git` are validated (no leading
-  `-`, ref-shaped characters only) and paths always follow `--`.
+- **Read-only by default.** Every tool in the four inspection servers is annotated `readOnlyHint`.
+  The one server that can change things is covered below.
+- **No option injection.** Model-supplied refs, paths and container names handed to `git` or
+  `docker` are validated (no leading `-`, no shell metacharacters) and paths always follow `--`.
+
+### Write actions
+
+`devops-actions` is the only server that changes anything, and it is guarded three ways:
+
+1. **Opt-in by registration.** Drop it from `.mcp.json` and the agent has no mutating tools at all.
+2. **Permission control.** `DEVOPS_MCP_ALLOW_ACTIONS=0` disables every tool;
+   `DEVOPS_MCP_ACTION_CONTAINERS` scopes them to matching container names.
+3. **Human approval per call.** Every tool is annotated `destructiveHint` and carries
+   `anthropic/requiresUserInteraction`, which forces a permission prompt on *every* call with no
+   "don't ask again" option, even in auto-accept modes. The agent cannot batch past it.
+
+Each action reports container state before and after, so the agent can verify the result rather
+than assume it.
 
 ## Layout
 
@@ -88,11 +105,13 @@ src/devops_mcp/
   config.py        settings from env
   safety.py        path sandbox, redaction, truncation
   shell.py         subprocess wrapper (git / docker servers)
+  docker_client.py shared docker CLI plumbing + error translation
   servers/
     filesystem.py  list_files / read_file / search_files
     git.py         git_status / git_diff / git_log / git_show
     docker.py      list_containers / inspect_container / get_container_logs
     logs.py        read_log / search_logs / summarize_errors
+    actions.py     restart / stop / start / rebuild  (approval-gated)
 fixtures/broken_app/   deliberately broken Flask app used by tests and demos
 scripts/make_demo.py   builds demo/broken_app with a telling git history
 tests/
