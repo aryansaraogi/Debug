@@ -8,6 +8,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
 from devops_mcp.safety import REDACTED
+from devops_mcp import docker_client as dc
 from devops_mcp.servers import docker as dk
 from devops_mcp.shell import CommandResult
 
@@ -91,18 +92,18 @@ def fail(stderr: str, rc: int = 1) -> CommandResult:
 
 @pytest.fixture
 def fake(monkeypatch):
-    """Route _run_docker through a dict of handlers keyed by the subcommand."""
+    """Route docker_client.run_docker through a dict of handlers keyed by the subcommand."""
     calls: list[tuple[str, ...]] = []
     handlers: dict[str, object] = {}
 
-    def _run(*args, timeout=30.0):
+    def _run(*args, timeout=30.0, cwd=None):
         calls.append(args)
         h = handlers.get(args[0])
         if h is None:
             raise AssertionError(f"unexpected docker call: {args}")
         return h(args) if callable(h) else h
 
-    monkeypatch.setattr(dk, "_run_docker", _run)
+    monkeypatch.setattr(dc, "run_docker", _run)
     handlers["calls"] = calls  # type: ignore[assignment]
     return handlers
 
@@ -138,7 +139,7 @@ def test_daemon_down_is_tool_error(fake):
 
 
 def test_cli_missing_is_tool_error(monkeypatch):
-    monkeypatch.setattr(dk, "which", lambda _: None)
+    monkeypatch.setattr(dc, "which", lambda _: None)
     with pytest.raises(ToolError, match="Docker CLI not found"):
         dk.list_containers()
 

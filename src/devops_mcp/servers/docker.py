@@ -18,14 +18,12 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from devops_mcp import docker_client as dc
 from devops_mcp.safety import redact, truncate
-from devops_mcp.shell import CommandResult, run, which
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
-DOCKER_TIMEOUT = 30.0
 MAX_TAIL = 5000
-_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*$")
 _SINCE_RE = re.compile(r"^[A-Za-z0-9:.+\-TZ]+$")
 _TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s")
 
@@ -38,64 +36,6 @@ mcp = MCPServer(
         "Env values and log secrets are redacted."
     ),
 )
-
-
-# --------------------------------------------------------------------------- plumbing
-
-
-def _docker_exe() -> str:
-    exe = which("docker")
-    if not exe:
-        raise ToolError("Docker CLI not found on PATH. Is Docker Desktop installed?")
-    return exe
-
-
-def _run_docker(*args: str, timeout: float = DOCKER_TIMEOUT) -> CommandResult:
-    """Single seam for every docker invocation; tests monkeypatch this."""
-    return run([_docker_exe(), *args], timeout=timeout)
-
-
-def _daemon_down(stderr: str) -> bool:
-    s = stderr.lower()
-    return any(
-        marker in s
-        for marker in (
-            "cannot connect to the docker daemon",
-            "error during connect",
-            "docker daemon is not running",
-            "the system cannot find the file specified",
-            "open //./pipe/docker",
-            "is the docker daemon running",
-        )
-    )
-
-
-def _docker(*args: str, timeout: float = DOCKER_TIMEOUT) -> str:
-    result = _run_docker(*args, timeout=timeout)
-    if result.ok:
-        return result.stdout
-    err = (result.stderr or result.stdout).strip()
-    first = err.splitlines()[0] if err else f"exit code {result.returncode}"
-    if _daemon_down(err):
-        raise ToolError("Docker daemon is not reachable. Is Docker Desktop running?")
-    if "no such container" in err.lower():
-        raise ToolError(f"{first}. Known containers: {_known_names() or 'none'}")
-    raise ToolError(f"docker {args[0]} failed: {first}")
-
-
-def _known_names() -> str:
-    try:
-        result = _run_docker("ps", "-a", "--format", "{{.Names}}")
-    except ToolError:
-        return ""
-    return ", ".join(sorted(n for n in result.stdout.split() if n)) if result.ok else ""
-
-
-def _safe_name(name: str) -> str:
-    name = name.strip()
-    if not name or not _NAME_RE.match(name):
-        raise ToolError(f"Invalid container name or id {name!r}.")
-    return name
 
 
 # --------------------------------------------------------------------------- list_containers
@@ -169,7 +109,7 @@ def list_containers(all: bool = True) -> ContainerList:
     args = ["ps", "--no-trunc", "--format", "{{json .}}"]
     if all:
         args.insert(1, "-a")
-    result = ContainerList(containers=_parse_ps(_docker(*args)))
+    result = ContainerList(containers=_parse_ps(dc.docker(*args)))
     if not result.containers:
         result.note = "No containers found." + ("" if all else " Try all=True to include stopped ones.")
     return result
@@ -324,13 +264,13 @@ def inspect_container(name: str) -> ContainerDetails:
     The diagnosis_hints field flags the usual suspects (crash loop, OOM, unhealthy) so you know
     where to look next.
     """
-    raw = _docker("inspect", "--type", "container", _safe_name(name))
+    raw = dc.docker("inspect", "--type", "container", dc.safe_name(name))
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ToolError(f"Unexpected docker inspect output: {exc}") from exc
     if not data:
-        raise ToolError(f"No such container: {name}. Known containers: {_known_names() or 'none'}")
+        raise ToolError(f"No such container: {name}. Known containers: {dc.known_names() or 'none'}")
     return _summarise_inspect(data[0])
 
 
@@ -379,15 +319,15 @@ def get_container_logs(
         args.append(f"--since={since}")
     if timestamps:
         args.append("--timestamps")
-    args.append(_safe_name(name))
+    args.append(dc.safe_name(name))
 
-    result = _run_docker(*args)
+    result = dc.run_docker(*args)
     if not result.ok:
         err = (result.stderr or "").strip()
-        if _daemon_down(err):
+        if dc.daemon_down(err):
             raise ToolError("Docker daemon is not reachable. Is Docker Desktop running?")
         if "no such container" in err.lower():
-            raise ToolError(f"{err.splitlines()[0]}. Known containers: {_known_names() or 'none'}")
+            raise ToolError(f"{err.splitlines()[0]}. Known containers: {dc.known_names() or 'none'}")
         raise ToolError(f"docker logs failed: {err.splitlines()[0] if err else result.returncode}")
 
     text = result.stderr if stderr_only else _merge_streams(result.stdout, result.stderr, timestamps)
