@@ -13,14 +13,14 @@ The agent doesn't get a dump of your system. It gets tools, and decides which on
 |---|---|---|
 | `devops-filesystem` | `list_files`, `read_file`, `search_files` | **done** |
 | `devops-git` | `git_status`, `git_diff`, `git_log`, `git_show` | **done** |
-| `devops-docker` | `list_containers`, `inspect_container`, `get_container_logs` | planned |
-| `devops-logs` | `read_log`, `search_logs`, `summarize_errors` | planned |
+| `devops-docker` | `list_containers`, `inspect_container`, `get_container_logs` | **done** |
+| `devops-logs` | `read_log`, `search_logs`, `summarize_errors` | **done** |
 
 ## Quick start
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest            # unit tests, no Docker needed
+python -m pytest            # unit tests; the one Docker integration test skips if no daemon
 mcp dev src/devops_mcp/servers/filesystem.py   # opens the MCP Inspector
 ```
 
@@ -39,6 +39,21 @@ Then ask:
 
 The agent should chain `search_files` → `git_log` → `git_show` and land on the
 "Rename users.email column to mail" commit.
+
+For the live Docker version, run the demo stack and generate some failing requests:
+
+```bash
+cd demo/broken_app
+docker compose up -d --build
+curl localhost:8000/users/1        # 500
+```
+
+Then ask:
+
+> The broken-backend container is returning 500s. Why?
+
+The agent should go `list_containers` → `get_container_logs` → `search_files` → `git_log` → `git_show`.
+Tear down with `docker compose down`.
 
 ## Configuration
 
@@ -76,6 +91,8 @@ src/devops_mcp/
   servers/
     filesystem.py  list_files / read_file / search_files
     git.py         git_status / git_diff / git_log / git_show
+    docker.py      list_containers / inspect_container / get_container_logs
+    logs.py        read_log / search_logs / summarize_errors
 fixtures/broken_app/   deliberately broken Flask app used by tests and demos
 scripts/make_demo.py   builds demo/broken_app with a telling git history
 tests/
