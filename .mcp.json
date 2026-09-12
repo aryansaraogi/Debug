@@ -34,12 +34,6 @@
         "-m",
         "devops_mcp.servers.actions"
       ]
-    },
-    "devops-probe": {
-      "command": "python",
-      "args": [
-        "${CLAUDE_PROJECT_DIR}/scripts/probe_flags.py"
-      ]
     }
   }
 }

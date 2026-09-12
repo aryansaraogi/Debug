@@ -203,11 +203,22 @@ server routes through it.
 Each action reports container state before and after, so the agent verifies the result instead of
 assuming it.
 
-> **Known issue.** In the current Claude Code build these four tools are filtered out of the model's
-> tool list rather than being offered behind a prompt. The server connects and serves them
-> correctly over a direct MCP session, so the cause is host-side. `scripts/probe_flags.py` is a
-> diagnostic server that isolates which attribute triggers the filtering; it is temporary and will
-> be removed once resolved. The other four servers are unaffected.
+> **Known issue — these four tools are currently unreachable.** `devops-actions` connects and
+> serves its tools correctly over a direct MCP session, but Claude Code does not pass them to the
+> model: they are absent from the tool list entirely rather than offered behind a prompt. This is
+> host-side and unrelated to the tools themselves.
+>
+> The cause is *not* the annotations or the approval metadata. `scripts/probe_flags.py` is a
+> diagnostic server exposing four tools covering every combination of `destructiveHint` and
+> `requiresUserInteraction`; none of them reached the model either, including a plain read-only
+> tool with no metadata at all. What the reachable and unreachable servers actually differ by is
+> registration order: the four servers registered earlier contribute all 13 of their tools, and
+> the two registered later contribute none. Restarts, `permissions.defaultMode`, and explicit
+> `enabledMcpjsonServers` entries made no difference.
+>
+> The other four servers are unaffected, so the whole read-only investigation flow works. Keep
+> `probe_flags.py` around as the reproduction; run it with
+> `python scripts/probe_flags.py` under any MCP client to confirm the server side is sound.
 
 ---
 
