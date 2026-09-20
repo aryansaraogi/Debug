@@ -13,6 +13,9 @@ chooses among them, one call at a time.
 
 ![A real investigation: the agent picks six tools and lands on the commit that broke the app](docs/img/investigation.png)
 
+**New here? [GUIDE.md](GUIDE.md) walks through one investigation end to end** and explains why
+each piece behaves the way it does. This README is the reference.
+
 Eighteen tools across five servers. Every screenshot in this README is real output, not a mockup —
 see [Regenerating the screenshots](#regenerating-the-screenshots).
 
