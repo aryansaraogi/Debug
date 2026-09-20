@@ -8,3 +8,7 @@ dist/
 build/
 .claude/settings.local.json
 demo/
+
+# Local secrets - never commit (fixtures/broken_app/.env is fake and tracked deliberately)
+/.env
+/.env.local

@@ -1,35 +1,35 @@
 {
   "mcpServers": {
     "devops-filesystem": {
-      "command": "python",
+      "command": "${DEVOPS_MCP_PYTHON:-python}",
       "args": [
         "-m",
         "devops_mcp.servers.filesystem"
       ]
     },
     "devops-git": {
-      "command": "python",
+      "command": "${DEVOPS_MCP_PYTHON:-python}",
       "args": [
         "-m",
         "devops_mcp.servers.git"
       ]
     },
     "devops-docker": {
-      "command": "python",
+      "command": "${DEVOPS_MCP_PYTHON:-python}",
       "args": [
         "-m",
         "devops_mcp.servers.docker"
       ]
     },
     "devops-logs": {
-      "command": "python",
+      "command": "${DEVOPS_MCP_PYTHON:-python}",
       "args": [
         "-m",
         "devops_mcp.servers.logs"
       ]
     },
     "devops-actions": {
-      "command": "python",
+      "command": "${DEVOPS_MCP_PYTHON:-python}",
       "args": [
         "-m",
         "devops_mcp.servers.actions"

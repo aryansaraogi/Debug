@@ -119,13 +119,30 @@ Every tool here prompts for explicit approval on every single call. See [Safety]
 ## Quick start
 
 ```bash
-pip install -e ".[dev]"
-python -m pytest                                # 155 tests; Docker ones skip without a daemon
+pip install -e ".[dev,agent]"                   # agent extra pulls in the Anthropic SDK
+python -m pytest                                # 175 tests; Docker ones skip without a daemon
 mcp dev src/devops_mcp/servers/filesystem.py    # open the MCP Inspector
 ```
 
 The servers are registered for Claude Code in [`.mcp.json`](.mcp.json) at project scope. Open this
 folder in Claude Code, approve the servers when prompted, then check `/mcp`.
+
+**Which interpreter runs the servers.** `.mcp.json` launches them with
+`${DEVOPS_MCP_PYTHON:-python}`, so by default they use whatever `python` is on `PATH` — correct
+when you start Claude Code from an activated venv or conda env. If your `python` is something else
+(a system Python, or a different conda env), point the variable at the right interpreter instead of
+editing the committed file:
+
+```jsonc
+// .claude/settings.local.json — gitignored, so your path never reaches the repo
+{
+  "env": { "DEVOPS_MCP_PYTHON": "/absolute/path/to/env/bin/python" }
+}
+```
+
+On Windows that is `...\env\Scripts\python.exe`. Getting this wrong is the single most likely
+reason all five servers fail to connect at once: the interpreter starts but has no `devops_mcp`
+installed, so every server exits immediately.
 
 ### Try it
 
@@ -152,6 +169,65 @@ curl.exe http://localhost:8000/users/1     # 500; use curl.exe on PowerShell, no
 Add *"use only the devops MCP tools"* to the question. Otherwise the agent may reach for its
 built-in file tools, which is faster but proves nothing about these servers. Tear down with
 `docker compose down`.
+
+---
+
+## The agent
+
+The five servers are only half the system — something has to *drive* them. `devops_mcp.agent` is a
+standalone host that does exactly that: it spawns the servers over stdio, hands their tool
+definitions to Claude, and runs the investigation loop until the model reaches a diagnosis.
+
+```bash
+cp .env.example .env          # then put your key in it; .env is gitignored
+python -m devops_mcp.agent --check                     # verify credentials + tool discovery
+python -m devops_mcp.agent "The broken-backend container is returning 500s. Why?"
+```
+
+```
+devops agent  model=claude-opus-5  17 tools from 5 servers  (4 need approval)
+
+  ● list_containers   all=true
+  ● summarize_errors  path=logs/app.log
+  ● read_file         path=app/routes.py start_line=14 end_line=22
+  ● git_log           path=app/repository.py limit=5
+  ● git_show          ref=661536c
+
+  ⚠ WRITE ACTION restart_container(name='broken-backend')
+  Approve? [y/N]
+```
+
+This is not Claude Code — it is ~400 lines that own the loop, so the safety model is enforced
+here rather than assumed:
+
+- **The approval gate is real.** Any tool whose MCP metadata carries
+  `anthropic/requiresUserInteraction` stops the loop and asks. Decline it and the model gets an
+  error result telling it not to retry — the investigation continues read-only.
+- **With no approver wired, an approval-gated tool cannot run.** The default is refusal, not
+  silent execution.
+- **`--read-only` removes the write tools entirely**, rather than disabling them: `devops-actions`
+  is never started, so 13 tools exist instead of 17.
+
+| Flag | Meaning |
+|---|---|
+| `--roots PATH` | Directory the tools may touch (repeatable). Sets `DEVOPS_MCP_ROOTS` for the child servers. |
+| `--read-only` | Do not start `devops-actions`. The agent has no mutating tools at all. |
+| `--servers A,B` | Explicit server list. |
+| `--yes` | Auto-approve write actions. Non-interactive runs decline by default. |
+| `--model` | Override the model (default `claude-opus-5`). |
+| `--max-turns` | Safety stop for a runaway loop (default 40). |
+| `--check` | List discovered tools and credential status, then exit. Works without a key. |
+
+### Credentials
+
+The key lives in `.env` as **`ANTHROPIC_KEY`** and is passed to the SDK client explicitly.
+That is deliberate: the SDK's default `ANTHROPIC_API_KEY` is picked up implicitly from the
+environment, so a stray value in your shell could silently decide which account gets billed.
+`src/devops_mcp/llm.py` is the only place credentials are read.
+
+The API's built-in MCP connector only speaks to remote URL servers. These are local stdio
+processes, so `agent/bridge.py` is the connector — it aggregates tools across servers, refuses
+name collisions, and passes the environment through so `DEVOPS_MCP_ROOTS` actually reaches them.
 
 ---
 
@@ -230,17 +306,22 @@ src/devops_mcp/
   safety.py          path sandbox, secret redaction, output truncation
   shell.py           subprocess wrapper — argv lists, timeouts, never a shell
   docker_client.py   shared docker CLI plumbing and error translation
+  llm.py             the only place the Anthropic credential is read
   servers/
     filesystem.py    list_files / read_file / search_files
     git.py           git_status / git_diff / git_log / git_show
     docker.py        list_containers / inspect_container / get_container_logs
     logs.py          read_log / search_logs / summarize_errors
     actions.py       restart / stop / start / rebuild   (approval-gated)
+  agent/
+    bridge.py        spawns the servers, aggregates their tools, routes calls
+    session.py       the tool loop, approval gate, refusal + turn limits
+    __main__.py      the CLI
 fixtures/broken_app/ deliberately broken Flask app used by tests and demos
 scripts/
   make_demo.py       builds demo/broken_app with a bug-introducing commit in its history
   probe_flags.py     temporary diagnostic (see Known issue above)
-tests/               155 tests, mostly on the safety boundary
+tests/               175 tests, mostly on the safety boundary and the approval gate
 ```
 
 Each server runs standalone: `python -m devops_mcp.servers.<name>`.
