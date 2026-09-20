@@ -11,30 +11,28 @@ The agent decides which tools it needs, calls them through the Model Context Pro
 back with a diagnosis. It never receives a dump of your system — it gets a set of capabilities and
 chooses among them, one call at a time.
 
+![A real investigation: the agent picks six tools and lands on the commit that broke the app](docs/img/investigation.png)
+
+Seventeen tools across five servers. Every screenshot in this README is real output, not a mockup —
+see [Regenerating the screenshots](#regenerating-the-screenshots).
+
 ---
 
-## What it actually does
+## What this is
 
-A real investigation against the bundled demo app, unedited:
+Three things, which you can adopt separately:
 
-```
-You:   The broken-backend container is returning 500s. Why?
+1. **Five MCP servers** that expose your filesystem, git history, Docker containers and log files
+   to a language model as *tools* — safely, and with a strict output budget. These work in any MCP
+   client: Claude Code, the MCP Inspector, or your own.
+2. **A standalone agent host** (`python -m devops_mcp.agent`) that spawns those servers, hands
+   their tools to Claude, and runs the investigation loop to a conclusion. ~400 lines, so the
+   safety model is *enforced* here rather than assumed.
+3. **A deliberately broken demo app** whose git history contains a planted bug, so you can watch
+   the whole thing work before pointing it at anything you care about.
 
-Agent: list_containers        → finds broken-backend, running, no restarts
-       inspect_container      → exit code 0, no OOM, health fine, so not infrastructure
-       get_container_logs     → KeyError: 'email' at /srv/app/routes.py line 21
-       summarize_errors       → 26 occurrences of that one error; 1 unrelated Redis warning
-       read_file routes.py    → reads user["email"]
-       read_file repository.py→ but rows are keyed "mail"
-       git_log path=repo.py   → commit 661536c "Rename users.email column to mail"
-       git_show 661536c       → renamed the key, never updated the route
-
-Diagnosis: commit 661536c changed the data layer but not its consumer. Every request to
-/users/<id> raises KeyError. /health still works because it never touches user rows.
-Fix routes.py line 21, then rebuild — the image has no source mount, so a restart won't help.
-```
-
-That chain is the agent's own. Nothing in it was scripted.
+**What it is not:** an autonomous operator. Thirteen of the seventeen tools cannot change anything,
+and the four that can stop and ask a human every single time.
 
 ---
 
@@ -47,24 +45,78 @@ That chain is the agent's own. Nothing in it was scripted.
 ```
 
 **MCP is the bridge.** Each server is a standalone Python process speaking the Model Context
-Protocol over stdin/stdout. The host (Claude Code, or any MCP client) starts them, collects their
-tool definitions, and hands those to the model. The model picks tools; the host routes the calls.
+Protocol over stdin/stdout. The host starts them, collects their tool definitions, and hands those
+to the model. The model picks tools; the host routes the calls. No server ever talks to the model
+directly, and no server knows another exists.
 
-**Why five servers instead of one.** Each is independently registrable. Running only the four
-read-only servers means the agent has *no* mutating tools at all — not disabled ones, absent ones.
-That property is worth more than the convenience of a single process.
+A single question turns into a loop:
 
-**The design constraint that shapes everything: context is scarce.** A tool that dumps a
-10,000-line log is worse than no tool, because it buries the answer. So every tool caps its own
-output, says so when it truncates, and tells the model how to narrow the next call. That's why
-`summarize_errors` exists — it turns thousands of log lines into a ranked list of distinct
-problems.
+| Step | What happens |
+|---|---|
+| 1. Discover | The host spawns each server and asks for its tool list, name, schema and annotations. |
+| 2. Offer | All tools are aggregated into one flat namespace and passed to the model. Name collisions are refused rather than silently shadowed. |
+| 3. Choose | The model returns `tool_use` blocks. It sees only descriptions and schemas — never your files. |
+| 4. Gate | Any tool annotated `anthropic/requiresUserInteraction` stops the loop and asks a human. |
+| 5. Execute | The call is routed to the owning server, which sandboxes the path, runs the command, then redacts and truncates the result. |
+| 6. Repeat | Results go back as one user message. The loop continues until the model stops calling tools. |
+
+Git and Docker are driven through their CLIs as argv lists — never a shell — so there is no client
+library to keep in sync and both degrade to a readable error when unavailable.
+
+---
+
+## Why it is built this way
+
+Each of these is a deliberate trade, and the reason matters more than the mechanism.
+
+### Context is the scarce resource
+
+**A tool that dumps a 10,000-line log is worse than no tool**, because it buries the answer and
+burns the budget the model needs to reason. So every tool caps its own output, states when it
+truncated, and tells the model how to narrow the next call.
+
+That constraint is why `summarize_errors` exists at all. Rather than returning log lines, it groups
+repeated errors and tracebacks into *distinct problems*, ranked by severity and count, each with
+the innermost code location and first/last-seen timestamps. It understands Python tracebacks
+including chained ones, Docker-style timestamp-prefixed lines, and JavaScript and Java stack
+frames, and it normalises request IDs, UUIDs and hex values so one problem doesn't fragment into a
+hundred groups. Above, it turned 351 log lines into two facts.
+
+### Five servers, not one
+
+Each server is independently registrable. Running only the four read-only servers means the agent
+has **no mutating tools at all — not disabled ones, absent ones**. A capability that isn't loaded
+cannot be invoked by a confused model, a prompt injection, or a bug in the approval logic.
+
+That property is worth more than the convenience of a single process. `--read-only` exercises it:
+13 tools exist instead of 17.
+
+### One safety boundary, not one per server
+
+Every server routes through [`src/devops_mcp/safety.py`](src/devops_mcp/safety.py). Path sandboxing,
+secret redaction and output truncation live in exactly one place, which is the only way to be
+confident all four read paths actually enforce them. Most of the 175 tests aim at this file.
+
+### The model is an untrusted planner
+
+It chooses *what* to look at; it never chooses *whether* it is allowed to. Paths are resolved
+through symlinks and checked against the roots. Refs and container names that reach `git` or
+`docker` are validated for option injection, and paths always follow `--`. Every refusal is written
+to be *read by the model*, naming the resolved path so it can correct itself instead of retrying
+blind.
+
+### Errors are evidence
+
+An empty result is information about your query at least as often as about the system, so tools say
+what they searched and how much they scanned (`files_scanned`, `lines_analyzed`, `truncated`). The
+agent's system prompt pushes back explicitly on concluding "there is no history" from one empty
+call.
 
 ---
 
 ## The tools
 
-Seventeen tools across five servers. Every parameter below is optional unless marked required.
+Every parameter below is optional unless marked **required**.
 
 ### `devops-filesystem` — project inspection
 
@@ -83,6 +135,9 @@ Seventeen tools across five servers. Every parameter below is optional unless ma
 | `git_log` | `repo="."`, `limit=15`, `ref`, `path` | Commits with author, date, subject and files-changed. `path` finds who last touched a file. |
 | `git_show` | `repo="."`, `ref="HEAD"`, `stat_only=False` | One commit: metadata, message and patch. |
 
+> `repo=` chooses **which** repository; `path=` narrows to a file **within** it. A project in a
+> subdirectory is usually its own repo — reach it with `repo=<that directory>`.
+
 ### `devops-docker` — container inspection
 
 | Tool | Parameters | Returns |
@@ -95,17 +150,11 @@ Seventeen tools across five servers. Every parameter below is optional unless ma
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| `summarize_errors` | **`path`**, `max_groups=10`, `max_lines=50000` | **Start here.** Groups repeated errors and tracebacks into distinct problems, ranked by severity and count, each with the innermost code location and first/last seen timestamps. |
+| `summarize_errors` | **`path`**, `max_groups=10`, `max_lines=50000` | **Start here.** Groups repeated errors and tracebacks into distinct problems, ranked by severity and count. |
 | `search_logs` | **`path`**, **`pattern`**, `context=2`, `max_results=30`, `ignore_case=True`, `max_lines=50000` | Regex hits with surrounding context lines, plus a total match count. |
 | `read_log` | **`path`**, `tail=200` | Raw recent lines, numbered. Reads large files from the end without loading them whole. |
 
-`summarize_errors` understands Python tracebacks including chained ones, Docker-style logs where
-every line carries a timestamp prefix, and JavaScript or Java stack frames. It normalises request
-IDs, UUIDs and hex values so one problem doesn't fragment into a hundred groups.
-
 ### `devops-actions` — write operations, **human approval required**
-
-Every tool here prompts for explicit approval on every single call. See [Safety](#safety) below.
 
 | Tool | Parameters | Returns |
 |---|---|---|
@@ -114,24 +163,31 @@ Every tool here prompts for explicit approval on every single call. See [Safety]
 | `start_container` | **`name`** | State before and after. |
 | `rebuild_service` | **`compose_dir`**, `service`, `no_cache=False` | `docker compose up -d --build`. The step that makes a source edit take effect when a container has no bind mount — restarting alone keeps the old image. |
 
+Each action reports container state before and after, so the agent verifies the result instead of
+assuming it.
+
 ---
 
 ## Quick start
 
 ```bash
-pip install -e ".[dev,agent]"                   # agent extra pulls in the Anthropic SDK
-python -m pytest                                # 175 tests; Docker ones skip without a daemon
-mcp dev src/devops_mcp/servers/filesystem.py    # open the MCP Inspector
+pip install -e ".[dev,agent]"     # agent extra pulls in the Anthropic SDK
+python -m pytest                  # 175 tests; the Docker ones skip without a daemon
 ```
 
+![The suite on a machine with no Docker daemon: 172 passed, 3 skipped](docs/img/tests.png)
+
+The suite never requires Docker. Tests that need a real daemon are marked `docker` and skip
+themselves when one isn't reachable, so a clean checkout is green either way.
+
 The servers are registered for Claude Code in [`.mcp.json`](.mcp.json) at project scope. Open this
-folder in Claude Code, approve the servers when prompted, then check `/mcp`.
+folder in Claude Code, approve the servers when prompted, then check `/mcp`. To poke at a single
+server by hand, `mcp dev src/devops_mcp/servers/filesystem.py` opens the MCP Inspector.
 
 **Which interpreter runs the servers.** `.mcp.json` launches them with
 `${DEVOPS_MCP_PYTHON:-python}`, so by default they use whatever `python` is on `PATH` — correct
-when you start Claude Code from an activated venv or conda env. If your `python` is something else
-(a system Python, or a different conda env), point the variable at the right interpreter instead of
-editing the committed file:
+when you start Claude Code from an activated venv or conda env. If your `python` is something else,
+point the variable at the right interpreter instead of editing the committed file:
 
 ```jsonc
 // .claude/settings.local.json — gitignored, so your path never reaches the repo
@@ -164,6 +220,8 @@ docker compose up -d --build
 curl.exe http://localhost:8000/users/1     # 500; use curl.exe on PowerShell, not the alias
 ```
 
+![The demo stack builds, /health returns 200 and /users/1 returns 500](docs/img/demo-500.png)
+
 > The broken-backend container is returning 500s. Why?
 
 Add *"use only the devops MCP tools"* to the question. Otherwise the agent may reach for its
@@ -184,29 +242,10 @@ python -m devops_mcp.agent --check                     # verify credentials + to
 python -m devops_mcp.agent "The broken-backend container is returning 500s. Why?"
 ```
 
-```
-devops agent  model=claude-opus-5  17 tools from 5 servers  (4 need approval)
+`--check` is the fastest way to confirm the whole chain works. It spawns all five servers, lists
+what they offer, and reports credential status — and it works without a key:
 
-  ● list_containers   all=true
-  ● summarize_errors  path=logs/app.log
-  ● read_file         path=app/routes.py start_line=14 end_line=22
-  ● git_log           path=app/repository.py limit=5
-  ● git_show          ref=661536c
-
-  ⚠ WRITE ACTION restart_container(name='broken-backend')
-  Approve? [y/N]
-```
-
-This is not Claude Code — it is ~400 lines that own the loop, so the safety model is enforced
-here rather than assumed:
-
-- **The approval gate is real.** Any tool whose MCP metadata carries
-  `anthropic/requiresUserInteraction` stops the loop and asks. Decline it and the model gets an
-  error result telling it not to retry — the investigation continues read-only.
-- **With no approver wired, an approval-gated tool cannot run.** The default is refusal, not
-  silent execution.
-- **`--read-only` removes the write tools entirely**, rather than disabling them: `devops-actions`
-  is never started, so 13 tools exist instead of 17.
+![--check lists 17 tools from 5 servers, 4 marked approval](docs/img/agent-check.png)
 
 | Flag | Meaning |
 |---|---|
@@ -231,6 +270,62 @@ name collisions, and passes the environment through so `DEVOPS_MCP_ROOTS` actual
 
 ---
 
+## Safety
+
+The boundary lives in one place, [`src/devops_mcp/safety.py`](src/devops_mcp/safety.py), and every
+server routes through it.
+
+### Path sandbox
+
+Every path is fully resolved, symlinks included, and must land inside an allowed root. Traversal,
+absolute escapes and symlink escapes are refused with an error the model can read and correct:
+
+![A traversal attempt is refused, naming the resolved path](docs/img/sandbox.png)
+
+### Secret redaction
+
+Secret-shaped keys (`*PASSWORD*`, `*TOKEN*`, `*API_KEY*`, …), credentials embedded in URLs, PEM
+blocks, bearer tokens and known token shapes are masked in every file, search, log, diff and
+container-env result. Config files stay readable, which matters because that's usually where the
+bug is:
+
+![Container env with secrets masked, including the password inside DATABASE_URL](docs/img/redaction.png)
+
+### Output budget
+
+No result exceeds the configured size. Truncated results say so and explain how to narrow the query.
+
+### No option injection
+
+Model-supplied refs, paths and container names that reach `git` or `docker` are validated (no
+leading `-`, no shell metacharacters) and paths always follow `--`. Commands are argv lists with
+timeouts; no shell is ever invoked.
+
+### Write actions
+
+`devops-actions` is the only server that changes anything, and three independent guards stack:
+
+1. **Opt-in by registration.** Remove it from `.mcp.json`, or pass `--read-only`, and the agent has
+   no mutating tools at all.
+2. **Operator control.** `DEVOPS_MCP_ALLOW_ACTIONS=0` disables every tool;
+   `DEVOPS_MCP_ACTION_CONTAINERS` scopes them to named containers, so the agent can be allowed to
+   restart your dev stack but never a database you happen to be running locally.
+3. **Human approval per call.** Each tool is annotated `destructiveHint` and carries
+   `anthropic/requiresUserInteraction`, which forces a prompt on every call with no "don't ask
+   again" option.
+
+![The write-action gate: the loop stops, asks, then reports state before and after](docs/img/approval.png)
+
+Two details make the gate more than a dialog box. **Declining is a real answer** — the model
+receives an error result telling it not to retry, and the investigation continues read-only.
+**With no approver wired, an approval-gated tool cannot run**: the default is refusal, not silent
+execution.
+
+The agent's system prompt also tells it to diagnose *before* proposing an action, because
+restarting a container destroys the evidence of why it failed.
+
+---
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -240,61 +335,10 @@ name collisions, and passes the environment through so `DEVOPS_MCP_ROOTS` actual
 | `DEVOPS_MCP_MAX_BYTES` | `65536` | Max bytes in any tool result. |
 | `DEVOPS_MCP_ALLOW_ACTIONS` | `1` | Set to `0` to disable every write tool. |
 | `DEVOPS_MCP_ACTION_CONTAINERS` | *(all)* | Glob allowlist scoping which containers write tools may touch, e.g. `broken_app-*,broken-backend`. |
+| `DEVOPS_MCP_MODEL` | `claude-opus-5` | Model the agent host uses. |
+| `DEVOPS_MCP_PYTHON` | `python` | Interpreter `.mcp.json` launches the servers with. |
 
 Point `DEVOPS_MCP_ROOTS` at a real project to investigate it.
-
----
-
-## Safety
-
-The boundary lives in one place, [`src/devops_mcp/safety.py`](src/devops_mcp/safety.py), and every
-server routes through it.
-
-- **Path sandbox.** Every path is fully resolved, symlinks included, and must land inside an allowed
-  root. Traversal, absolute escapes and symlink escapes are refused with an error the model can read
-  and correct.
-- **Secret redaction.** Secret-shaped keys (`*PASSWORD*`, `*TOKEN*`, `*API_KEY*`, …), credentials
-  embedded in URLs, PEM blocks, bearer tokens and known token shapes are masked in every file,
-  search, log, diff and container-env result. Config files stay readable, which matters because
-  that's usually where the bug is.
-- **Output budget.** No result exceeds the configured size. Truncated results say so and explain how
-  to narrow the query.
-- **No option injection.** Model-supplied refs, paths and container names that reach `git` or
-  `docker` are validated (no leading `-`, no shell metacharacters) and paths always follow `--`.
-  Commands are argv lists with timeouts; no shell is ever invoked.
-- **Read-only by default.** All 13 inspection tools are annotated `readOnlyHint`.
-
-### Write actions
-
-`devops-actions` is the only server that changes anything, and three independent guards stack:
-
-1. **Opt-in by registration.** Remove it from `.mcp.json` and the agent has no mutating tools at all.
-2. **Operator control.** `DEVOPS_MCP_ALLOW_ACTIONS=0` disables every tool;
-   `DEVOPS_MCP_ACTION_CONTAINERS` scopes them to named containers, so the agent can be allowed to
-   restart your dev stack but never a database you happen to be running locally.
-3. **Human approval per call.** Each tool is annotated `destructiveHint` and carries
-   `anthropic/requiresUserInteraction`, which is intended to force a prompt on every call with no
-   "don't ask again" option.
-
-Each action reports container state before and after, so the agent verifies the result instead of
-assuming it.
-
-> **Known issue — these four tools are currently unreachable.** `devops-actions` connects and
-> serves its tools correctly over a direct MCP session, but Claude Code does not pass them to the
-> model: they are absent from the tool list entirely rather than offered behind a prompt. This is
-> host-side and unrelated to the tools themselves.
->
-> The cause is *not* the annotations or the approval metadata. `scripts/probe_flags.py` is a
-> diagnostic server exposing four tools covering every combination of `destructiveHint` and
-> `requiresUserInteraction`; none of them reached the model either, including a plain read-only
-> tool with no metadata at all. What the reachable and unreachable servers actually differ by is
-> registration order: the four servers registered earlier contribute all 13 of their tools, and
-> the two registered later contribute none. Restarts, `permissions.defaultMode`, and explicit
-> `enabledMcpjsonServers` entries made no difference.
->
-> The other four servers are unaffected, so the whole read-only investigation flow works. Keep
-> `probe_flags.py` around as the reproduction; run it with
-> `python scripts/probe_flags.py` under any MCP client to confirm the server side is sound.
 
 ---
 
@@ -320,7 +364,9 @@ src/devops_mcp/
 fixtures/broken_app/ deliberately broken Flask app used by tests and demos
 scripts/
   make_demo.py       builds demo/broken_app with a bug-introducing commit in its history
-  probe_flags.py     temporary diagnostic (see Known issue above)
+  render_docs.py     regenerates the screenshots in docs/img
+  probe_flags.py     retired diagnostic, kept as an MCP annotation reproduction
+docs/img/            the screenshots in this README
 tests/               175 tests, mostly on the safety boundary and the approval gate
 ```
 
@@ -328,3 +374,20 @@ Each server runs standalone: `python -m devops_mcp.servers.<name>`.
 
 Requires Python 3.10+ and the `mcp` SDK 2.x. Git and Docker are invoked through their CLIs, so
 neither needs a client library, and both degrade to a readable error when unavailable.
+
+---
+
+## Regenerating the screenshots
+
+The images in `docs/img/` are rendered from transcripts captured by actually running the commands —
+they are not mockups, and they are not hand-drawn. The transcripts live as string constants at the
+bottom of [`scripts/render_docs.py`](scripts/render_docs.py):
+
+```bash
+pip install -e ".[docs]"
+python scripts/render_docs.py
+```
+
+If you change a tool's output, re-run the command, paste the new text in, and re-render, so the docs
+cannot drift away from the code. The renderer fails loudly on a glyph the font cannot draw rather
+than emitting a box.
