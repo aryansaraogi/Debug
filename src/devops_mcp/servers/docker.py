@@ -1,4 +1,4 @@
-"""Docker MCP server: list, inspect and read logs of containers via the docker CLI.
+"""Docker MCP server: inspect containers and the services they serve, via the docker CLI.
 
 Run:  python -m devops_mcp.servers.docker
 Dev:  mcp dev src/devops_mcp/servers/docker.py
@@ -19,6 +19,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from devops_mcp import docker_client as dc
+from devops_mcp.http_probe import HttpResult, probe
 from devops_mcp.safety import redact, truncate
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -33,7 +34,8 @@ mcp = MCPServer(
         "Read-only Docker inspection through the local daemon. For 'why is my container "
         "crashing/restarting/unhealthy': list_containers to find it, inspect_container for exit "
         "code, OOM, restart count, health and config, then get_container_logs (small tail first). "
-        "Env values and log secrets are redacted."
+        "After a fix, probe_url checks whether the service actually answers again - always "
+        "verify rather than assuming a rebuild worked. Env values and log secrets are redacted."
     ),
 )
 
@@ -335,6 +337,24 @@ def get_container_logs(
         return f"(no {'stderr ' if stderr_only else ''}log output for {name})"
     body, note = truncate(redact(text), hint="Reduce tail, pass since=, or use stderr_only=True.")
     return f"# logs: {name} (tail={tail}{', since=' + since if since else ''})\n" + body + (f"\n{note}" if note else "")
+
+
+# --------------------------------------------------------------------------- probe_url
+
+
+@mcp.tool(annotations=READ_ONLY)
+def probe_url(url: str, method: str = "GET", timeout: float = 10.0) -> HttpResult:
+    """Make one HTTP request to a local service and report status, timing, headers and body.
+
+    Use this to confirm a service is actually up, and to verify a fix worked after rebuild_service
+    rather than assuming it did. Returns a `hint` naming the next thing to check when the response
+    is an error.
+
+    Only GET and HEAD are allowed, and only hosts resolving to loopback or private addresses, so
+    this cannot change server state or reach the public internet. Redirects are reported, not
+    followed.
+    """
+    return probe(url, method=method, timeout=timeout)
 
 
 if __name__ == "__main__":

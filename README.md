@@ -13,7 +13,7 @@ chooses among them, one call at a time.
 
 ![A real investigation: the agent picks six tools and lands on the commit that broke the app](docs/img/investigation.png)
 
-Seventeen tools across five servers. Every screenshot in this README is real output, not a mockup —
+Eighteen tools across five servers. Every screenshot in this README is real output, not a mockup —
 see [Regenerating the screenshots](#regenerating-the-screenshots).
 
 ---
@@ -31,7 +31,7 @@ Three things, which you can adopt separately:
 3. **A deliberately broken demo app** whose git history contains a planted bug, so you can watch
    the whole thing work before pointing it at anything you care about.
 
-**What it is not:** an autonomous operator. Thirteen of the seventeen tools cannot change anything,
+**What it is not:** an autonomous operator. Fourteen of the eighteen tools cannot change anything,
 and the four that can stop and ask a human every single time.
 
 ---
@@ -89,13 +89,13 @@ has **no mutating tools at all — not disabled ones, absent ones**. A capabilit
 cannot be invoked by a confused model, a prompt injection, or a bug in the approval logic.
 
 That property is worth more than the convenience of a single process. `--read-only` exercises it:
-13 tools exist instead of 17.
+14 tools exist instead of 18.
 
 ### One safety boundary, not one per server
 
 Every server routes through [`src/devops_mcp/safety.py`](src/devops_mcp/safety.py). Path sandboxing,
 secret redaction and output truncation live in exactly one place, which is the only way to be
-confident all four read paths actually enforce them. Most of the 175 tests aim at this file.
+confident all four read paths actually enforce them. Most of the 200 tests aim at this file.
 
 ### The model is an untrusted planner
 
@@ -145,6 +145,12 @@ Every parameter below is optional unless marked **required**.
 | `list_containers` | `all=True` | Name, state, status, image, ports. Non-running listed first, since those are the interesting ones. |
 | `inspect_container` | **`name`** | The diagnostic subset of `docker inspect`: exit code, OOM flag, restart count and policy, health log, command, env (redacted), ports, mounts, networks. Plus `diagnosis_hints` flagging crash loops, OOM kills, exit 137/139 and failing health checks. |
 | `get_container_logs` | **`name`**, `tail=200`, `since`, `timestamps=True`, `stderr_only=False` | Stdout and stderr interleaved by timestamp. |
+| `probe_url` | **`url`**, `method="GET"`, `timeout=10` | Makes one HTTP request to a local service: status, timing, selected headers, redacted body, plus a `hint` naming what to check next. Closes the loop after a fix — verify rather than assume. |
+
+> `probe_url` is deliberately limited to **GET and HEAD**, and to hosts resolving to **loopback or
+> private addresses**. An unrestricted HTTP client would let the model change server state with a
+> POST and walk straight around the approval gate on `devops-actions`. Set `DEVOPS_MCP_HTTP_HOSTS`
+> to allow a specific public host.
 
 ### `devops-logs` — log analysis
 
@@ -172,7 +178,7 @@ assuming it.
 
 ```bash
 pip install -e ".[dev,agent]"     # agent extra pulls in the Anthropic SDK
-python -m pytest                  # 175 tests; the Docker ones skip without a daemon
+python -m pytest                  # 200 tests; the Docker ones skip without a daemon
 ```
 
 ![The suite on a machine with no Docker daemon: 172 passed, 3 skipped](docs/img/tests.png)
@@ -245,7 +251,7 @@ python -m devops_mcp.agent "The broken-backend container is returning 500s. Why?
 `--check` is the fastest way to confirm the whole chain works. It spawns all five servers, lists
 what they offer, and reports credential status — and it works without a key:
 
-![--check lists 17 tools from 5 servers, 4 marked approval](docs/img/agent-check.png)
+![--check lists the tools from all 5 servers, 4 marked approval](docs/img/agent-check.png)
 
 | Flag | Meaning |
 |---|---|
@@ -335,6 +341,7 @@ restarting a container destroys the evidence of why it failed.
 | `DEVOPS_MCP_MAX_BYTES` | `65536` | Max bytes in any tool result. |
 | `DEVOPS_MCP_ALLOW_ACTIONS` | `1` | Set to `0` to disable every write tool. |
 | `DEVOPS_MCP_ACTION_CONTAINERS` | *(all)* | Glob allowlist scoping which containers write tools may touch, e.g. `broken_app-*,broken-backend`. |
+| `DEVOPS_MCP_HTTP_HOSTS` | *(none)* | Comma-separated hosts `probe_url` may reach beyond loopback and private addresses. |
 | `DEVOPS_MCP_MODEL` | `claude-opus-5` | Model the agent host uses. |
 | `DEVOPS_MCP_PYTHON` | `python` | Interpreter `.mcp.json` launches the servers with. |
 
@@ -354,7 +361,7 @@ src/devops_mcp/
   servers/
     filesystem.py    list_files / read_file / search_files
     git.py           git_status / git_diff / git_log / git_show
-    docker.py        list_containers / inspect_container / get_container_logs
+    docker.py        list_containers / inspect_container / get_container_logs / probe_url
     logs.py          read_log / search_logs / summarize_errors
     actions.py       restart / stop / start / rebuild   (approval-gated)
   agent/
@@ -367,7 +374,7 @@ scripts/
   render_docs.py     regenerates the screenshots in docs/img
   probe_flags.py     retired diagnostic, kept as an MCP annotation reproduction
 docs/img/            the screenshots in this README
-tests/               175 tests, mostly on the safety boundary and the approval gate
+tests/               200 tests, mostly on the safety boundary and the approval gate
 ```
 
 Each server runs standalone: `python -m devops_mcp.servers.<name>`.

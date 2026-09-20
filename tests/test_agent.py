@@ -28,7 +28,15 @@ def bridge_env(monkeypatch):
 @pytest.mark.anyio
 async def test_bridge_discovers_every_tool(bridge_env):
     async with MCPBridge(python=sys.executable) as bridge:
-        assert len(bridge.tools) == 17
+        # Assert on names, not a count: a count only tells you a number moved, never which tool
+        # went missing, and it breaks on every legitimate addition.
+        assert set(bridge.tools) == {
+            "list_files", "read_file", "search_files",
+            "git_status", "git_diff", "git_log", "git_show",
+            "list_containers", "inspect_container", "get_container_logs", "probe_url",
+            "read_log", "search_logs", "summarize_errors",
+            "restart_container", "stop_container", "start_container", "rebuild_service",
+        }
         assert {t.server for t in bridge.tools.values()} == set(SERVERS)
 
 
@@ -36,9 +44,12 @@ async def test_bridge_discovers_every_tool(bridge_env):
 async def test_read_only_bridge_has_no_write_tools(bridge_env):
     """The capability boundary: not disabled write tools - absent ones."""
     async with MCPBridge(servers=READ_ONLY_SERVERS, python=sys.executable) as bridge:
-        assert len(bridge.tools) == 13
         assert not [n for n, t in bridge.tools.items() if t.requires_approval]
-        assert "restart_container" not in bridge.tools
+        assert not [n for n, t in bridge.tools.items() if t.destructive]
+        for absent in ("restart_container", "stop_container", "start_container", "rebuild_service"):
+            assert absent not in bridge.tools
+        # the read-only servers still contribute their full inventory, probe_url included
+        assert {"list_files", "git_log", "list_containers", "probe_url", "summarize_errors"} <= set(bridge.tools)
 
 
 @pytest.mark.anyio
